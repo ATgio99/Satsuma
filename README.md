@@ -15,8 +15,10 @@ The modifiers are configured in Settings (menu bar icon → Settings…). If the
 ## Build
 ```bash
 ./scripts/build_app.sh          # → build/Satsuma.app (ad-hoc signed)
+./scripts/make_dmg.sh           # → build/Satsuma-1.0.dmg (drag Satsuma onto Applications)
 swift test --scratch-path ~/Library/Caches/Satsuma-build
 ```
+The app is Apple silicon only (arm64) and signed ad hoc, not notarized. On the Mac that built it the DMG opens normally. On another Mac, a downloaded copy is blocked the first time: right-click Satsuma → Open, or System Settings → Privacy & Security → Open Anyway.
 The build runs in `~/Library/Caches/Satsuma-build` because the iCloud-synced Desktop adds extended attributes that `codesign` rejects.
 
 Debug modes:
