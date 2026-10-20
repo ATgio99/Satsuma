@@ -18,6 +18,8 @@ The modifiers are configured in Settings (menu bar icon → Settings…). If the
 ./scripts/make_dmg.sh           # → build/Satsuma-1.0.dmg (drag Satsuma onto Applications)
 swift test --scratch-path ~/Library/Caches/Satsuma-build
 ```
+The DMG window (760×440, 128 pt icons, Satsuma's own background with an arrow drawn by `scripts/dmg_background.swift`) is written by [dmgbuild](https://pypi.org/project/dmgbuild/) 1.6.7, which `make_dmg.sh` installs once in a venv in `~/Library/Caches/Satsuma-build`: no Finder scripting or Automation permission needed.
+
 The app is Apple silicon only (arm64) and signed ad hoc, not notarized. On the Mac that built it the DMG opens normally. On another Mac, a downloaded copy is blocked the first time: right-click Satsuma → Open, or System Settings → Privacy & Security → Open Anyway.
 The build runs in `~/Library/Caches/Satsuma-build` because the iCloud-synced Desktop adds extended attributes that `codesign` rejects.
 
@@ -39,6 +41,7 @@ Debug modes:
 The interface is modelled on the original app's official screenshots and demo video, plus the wheel geometry the original app publishes, which is identical to the binary's (a test checks the petal path down to the thousandth):
 - **Wheel**: SwiftUI with Liquid Glass on macOS 26, layered as in the binary's wheel body: a `Glass.clear` ring tinted 50 % grey, or 50 % black in dark mode; then a `GlassEffectContainer(spacing: 0)` holding only the `.regular.interactive()` petals, each with a `glassEffectID`; then the labels and the center capsule above the glass. `#FF5200` highlight (the binary's `AccentColor`), SF Pro Rounded labels, SF Symbol icons for tools and actions, center capsule. "Metallic" theme and a fallback for earlier systems.
 - **Menu bar menu**: rebuilt on every open. It shows "Satsuma is working/ready", the shortcut summary (⇧ Convert · ⌘ Tools · ⌃ Actions), active tasks ("source → target"), a "Launch at Login" checkmark item, Settings…, Getting Started…, About and Quit.
+- **Menu bar icon** (Satsuma's own option, Settings → General → Appearance): "Show icon in menu bar" hides the status item while Satsuma keeps running. Opening the app again (Finder, Spotlight) shows Settings, so the icon can be turned back on.
 - **Launch at login** is on by default: the first launch from the app bundle registers `SMAppService.mainApp` once. Turning it off (menu bar, Settings → General → Startup, or the Welcome's last page) sticks.
 - **Progress panel**: 360×108 glass pill with corner radius 24, ✕, title and status. The 5 pt orange bar sweeps while indeterminate. The finished state shows "Show in Finder" (opens Finder with the files selected), "Finished with errors" / "Couldn’t finish" plus the error list, and closes itself after 4 s on success. Clicking the background reveals the files, but clicks on ✕ and on buttons go to the button.
 - **Float**: decoded `FloatingTabLayout`:

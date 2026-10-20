@@ -80,6 +80,7 @@ final class SettingsModel: ObservableObject {
         static let defaultOptions = "defaultConversionOptions"
         static let terminalApp = "terminalApplicationID"
         static let didFinishWelcome = "didFinishWelcome"
+        static let showMenuBarIcon = "showMenuBarIcon"
         static let imageStrength = "imageCompression.defaultStrength"
         static let imageSize = "imageCompression.defaultSize"
         static let videoStrength = "videoCompression.defaultStrength"
@@ -94,6 +95,8 @@ final class SettingsModel: ObservableObject {
         }
     }
     @Published var soundsAndHapticsEnabled: Bool { didSet { defaults.set(soundsAndHapticsEnabled, forKey: Key.sounds) } }
+    /// Satsuma's own option: hide the status item while the app keeps running. Opening the app again shows Settings.
+    @Published var showMenuBarIcon: Bool { didSet { defaults.set(showMenuBarIcon, forKey: Key.showMenuBarIcon) } }
     @Published var floatWheelBehavior: FloatWheelBehavior { didSet { defaults.set(floatWheelBehavior.rawValue, forKey: Key.floatBehavior) } }
     @Published var defaultOptions: ConversionOptions {
         didSet { defaults.set(try? JSONEncoder().encode(defaultOptions), forKey: Key.defaultOptions) }
@@ -110,6 +113,7 @@ final class SettingsModel: ObservableObject {
         Self.migrateModifierMasks(defaults)
         conversionFanTheme = ConversionFanTheme(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .glass
         soundsAndHapticsEnabled = defaults.object(forKey: Key.sounds) as? Bool ?? true
+        showMenuBarIcon = defaults.object(forKey: Key.showMenuBarIcon) as? Bool ?? true
         floatWheelBehavior = FloatWheelBehavior(rawValue: defaults.string(forKey: Key.floatBehavior) ?? "") ?? .createNew
         defaultOptions = (defaults.data(forKey: Key.defaultOptions)).flatMap { try? JSONDecoder().decode(ConversionOptions.self, from: $0) } ?? ConversionOptions()
         conversionMask = defaults.integer(forKey: Key.conversionMask)

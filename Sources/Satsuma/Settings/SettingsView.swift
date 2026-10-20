@@ -98,6 +98,10 @@ private struct GeneralSettings: View {
                     Text("Metallic").tag(ConversionFanTheme.metallic)
                 }
                 Toggle("Sound and haptic feedback", isOn: $model.soundsAndHapticsEnabled)
+                Toggle(isOn: $model.showMenuBarIcon) {
+                    Text("Show icon in menu bar")
+                    Text("When hidden, Satsuma keeps running: open it again from Applications or Spotlight to get back to Settings.")
+                }
             }
             Section {
                 ModifierPicker(title: "Conversion wheel", mask: $model.conversionMask)

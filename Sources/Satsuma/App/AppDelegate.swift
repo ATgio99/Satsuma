@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
+import Combine
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -38,6 +39,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) { dragGestureMonitor?.stop() }
+
+    /// Opening Satsuma while it runs (Finder, Spotlight, Dock) shows Settings, the way back when the menu bar icon is hidden.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { showSettings() }
+        return true
+    }
 
     private func overlay() -> ConversionOverlayController {
         if let overlayController { return overlayController }
@@ -120,6 +127,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     private let taskStore: ConversionTaskStore
     private let openSettings: () -> Void
     private let openWelcome: () -> Void
+    private var visibility: AnyCancellable?
 
     init(taskStore: ConversionTaskStore, openSettings: @escaping () -> Void, openWelcome: @escaping () -> Void) {
         self.taskStore = taskStore
@@ -133,6 +141,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.autoenablesItems = false
         menu.delegate = self
         statusItem.menu = menu
+        visibility = SettingsModel.shared.$showMenuBarIcon.sink { [weak self] in self?.statusItem.isVisible = $0 }
         taskStore.onChange = { [weak self] in self?.rebuild() }
         rebuild()
     }
