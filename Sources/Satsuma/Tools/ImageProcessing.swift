@@ -25,7 +25,7 @@ enum ImageProcessing {
     /// Writes `image` beside `source` in the source's own format (PNG for SVG/BMP sources with alpha).
     static func save(_ image: CGImage, beside source: URL, suffix: String, quality: Double = 0.92, keepMetadata: Bool = true) throws -> URL {
         let format = ConversionFormat.detect(source) ?? .png
-        let target: ConversionFormat = [.svg, .avif, .bmp, .webp].contains(format) ? .png : format
+        let target: ConversionFormat = [.svg, .avif, .bmp, .webp, .raw].contains(format) ? .png : format
         let output = OutputNaming.destination(for: source, extension: target.fileExtension, suffix: suffix)
         var options = ConversionOptions()
         options.quality = quality > 0.9 ? .high : quality > 0.7 ? .balanced : .compact
@@ -181,13 +181,15 @@ enum ImageProcessing {
         guard let format = ConversionFormat.detect(url) else { throw ConversionError.unsupportedSource }
         var image = try loadCGImage(url)
         if let maxDimension = plan.maxDimension { image = resized(image, maxDimension: maxDimension) }
-        let target: ConversionFormat = [.png, .bmp, .tiff, .svg].contains(format) && plan.targetBytes == nil && format != .png ? .jpg : (format == .svg || format == .bmp ? .png : format)
+        let target: ConversionFormat = format == .raw ? .jpg : [.png, .bmp, .tiff, .svg].contains(format) && plan.targetBytes == nil && format != .png ? .jpg : (format == .svg || format == .bmp ? .png : format)
         let output = OutputNaming.destination(for: url, extension: target.fileExtension, suffix: " compressed")
         func encode(_ img: CGImage, quality: Double) throws -> Int64 {
             var options = ConversionOptions()
             options.preserveMetadata = false
             if target == .png {
                 try ImageConverter.write([img], properties: [nil], to: output, format: .png, options: options)
+            } else if target == .webp && !ImageConverter.imageIOCanWrite(.webp) {
+                try encodeWebP(img, quality: quality, to: output)
             } else {
                 guard let type = ImageConverter.utType(for: target),
                       let destination = CGImageDestinationCreateWithURL(output as CFURL, type.identifier as CFString, 1, nil) else {
@@ -200,17 +202,21 @@ enum ImageProcessing {
         }
         if let targetBytes = plan.targetBytes {
             // Lower the quality, then the dimensions, until the file fits.
+            // Quality does nothing for lossless formats, so one encode per size is enough there.
+            let attempts = [.jpg, .heic, .avif, .webp].contains(target) ? 7 : 1
             var current = image
-            for _ in 0..<6 {
+            for _ in 0..<20 {
                 var low = 0.05, high = 0.95, best: Double?
-                for _ in 0..<7 {
+                for _ in 0..<attempts {
                     let mid = (low + high) / 2
                     if try encode(current, quality: mid) <= targetBytes { best = mid; low = mid } else { high = mid }
                 }
                 if let best { _ = try encode(current, quality: best); return output }
+                guard max(current.width, current.height) >= 16 else { break }
                 current = resized(current, maxDimension: CGFloat(max(current.width, current.height)) * 0.75)
             }
             let smallest = ToolFormat.fileSize(output) ?? 0
+            try? FileManager.default.removeItem(at: output)
             throw ConversionError.encodingFailed("Could not reach the target size. Smallest attempt was \(ToolFormat.bytes(smallest)).")
         }
         let size = try encode(image, quality: plan.strong ? 0.5 : 0.72)
@@ -219,6 +225,20 @@ enum ImageProcessing {
             throw ConversionError.encodingFailed("Compressed output would exceed the original or target file size.")
         }
         return output
+    }
+
+    /// ImageIO has no WebP writer on current macOS, so this goes through cwebp like `ImageConverter`.
+    private static func encodeWebP(_ image: CGImage, quality: Double, to output: URL) throws {
+        guard let cwebp = ToolLocator.path("cwebp") else { throw ConversionError.missingTool("cwebp") }
+        let folder = try OutputNaming.temporaryDirectory(prefix: "Satsuma-img-")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let png = folder.appendingPathComponent("frame.png")
+        try ImageConverter.write([image], properties: [nil], to: png, format: .png, options: ConversionOptions())
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: cwebp)
+        process.arguments = ["-quiet", "-q", String(Int(quality * 100)), png.path, "-o", output.path]
+        try process.run(); process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw ConversionError.encodingFailed("cwebp could not create the compressed WebP.") }
     }
 
     static func compressPDF(_ url: URL, plan: CompressionPlan) throws -> URL {

@@ -1,6 +1,6 @@
 import AppKit
 
-/// Spreadsheets: CSV/TSV natively, XLSX through a minimal OOXML reader/writer, XLS/ODS through Numbers.
+/// Spreadsheets: CSV/TSV natively, XLSX and ODS through minimal readers/writers, XLS through Numbers.
 enum SpreadsheetConverter {
     static func parseDelimited(_ text: String, separator: Character) -> [[String]] {
         var rows: [[String]] = []
@@ -40,16 +40,37 @@ enum SpreadsheetConverter {
         }.joined(separator: "\n") + "\n"
     }
 
+    /// UTF-8, UTF-16 when a BOM says so, then the Windows and Latin-1 fallbacks; nil for bytes those would only turn into garbage.
+    private static func decodeDelimited(_ data: Data) -> String? {
+        var text: String?
+        if data.starts(with: [0xFF, 0xFE]) || data.starts(with: [0xFE, 0xFF]) {
+            text = String(data: data, encoding: .utf16)
+        } else if let utf8 = String(data: data, encoding: .utf8) {
+            text = utf8
+        } else {
+            // Mostly well-formed multi-byte sequences mean damaged UTF-8, which the 8-bit readings would garble throughout.
+            let repaired = String(decoding: data, as: UTF8.self).unicodeScalars
+            let damaged = repaired.filter { $0 == "\u{FFFD}" }.count
+            guard repaired.filter({ !$0.isASCII }).count - damaged <= damaged else { return nil }
+            text = String(data: data, encoding: .windowsCP1252) ?? String(data: data, encoding: .isoLatin1)
+        }
+        // NULs are UTF-16 or UTF-32 without a usable BOM.
+        return text?.unicodeScalars.contains("\0") == true ? nil : text
+    }
+
     static func readRows(_ url: URL, format: ConversionFormat) async throws -> [[String]] {
         switch format {
         case .csv, .tsv:
-            guard let text = try? String(contentsOf: url, encoding: .utf8) ?? String(contentsOf: url, encoding: .isoLatin1) else {
+            guard let data = try? Data(contentsOf: url), var text = decodeDelimited(data) else {
                 throw ConversionError.sourceCannotBeRead
             }
+            if text.unicodeScalars.first == "\u{FEFF}" { text.unicodeScalars.removeFirst() }
             return parseDelimited(text, separator: format == .csv ? "," : "\t")
         case .xlsx:
             return try XLSX.read(url)
-        case .xls, .ods:
+        case .ods:
+            return try ODS.read(url)
+        case .xls:
             let folder = try OutputNaming.temporaryDirectory(prefix: "Satsuma-sheet-")
             defer { try? FileManager.default.removeItem(at: folder) }
             let csv = folder.appendingPathComponent("sheet.csv")
@@ -70,7 +91,7 @@ enum SpreadsheetConverter {
     @MainActor
     static func convert(_ url: URL, from source: ConversionFormat, to target: ConversionFormat) async throws -> URL {
         let output = OutputNaming.destination(for: url, extension: target.fileExtension)
-        if (source == .xls || source == .ods) && (target == .xlsx || target == .pdf) {
+        if source == .xls && (target == .xlsx || target == .pdf) {
             try await IWorkBridge.numbersExport(url, output: output, format: target)
             return output
         }
@@ -87,7 +108,8 @@ enum SpreadsheetConverter {
             }.joined() + "</table>"
             let page = "<!doctype html><html><head><meta charset=\"utf-8\"><style>body{font:10pt Helvetica}table{border-collapse:collapse}td,th{border:1px solid #aaa;padding:3px}th{background:#eee}</style></head><body>\(html)</body></html>"
             try DocumentIO.renderPDF(try DocumentIO.fromHTML(page), to: output)
-        case .ods, .xls:
+        case .ods: try ODS.write(rows: rows, to: output)
+        case .xls:
             throw ConversionError.unsupportedPair(source, target)
         default:
             throw ConversionError.unsupportedPair(source, target)
@@ -96,32 +118,124 @@ enum SpreadsheetConverter {
     }
 }
 
-/// Archives (`ArchiveConverter`): ZIP via ditto, TAR via bsdtar (which also reads RAR and GZIP).
+/// Archives (`ArchiveConverter`): ZIP via ditto, TAR via bsdtar (which also reads RAR and GZIP), GZIP as a `.tar.gz` piped through gzip.
 enum ArchiveConverter {
-    static func extract(_ url: URL, format: ConversionFormat, into folder: URL) async throws {
+    /// With `macMetadata` false, tar leaves AppleDouble entries as plain files instead of restoring them (a malformed one is fatal).
+    static func extract(_ url: URL, format: ConversionFormat, into folder: URL, macMetadata: Bool = true) async throws {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let tarOptions = macMetadata ? [] : ["--no-mac-metadata"]
         switch format {
         case .zip: try await ProcessRunner.run("/usr/bin/ditto", ["-x", "-k", url.path, folder.path])
-        case .gzip where !url.lastPathComponent.lowercased().contains(".tar"):
-            let output = folder.appendingPathComponent(url.deletingPathExtension().lastPathComponent)
+        case .gzip where !isTarball(url):
+            let name = url.deletingPathExtension().lastPathComponent
+            let output = folder.appendingPathComponent(name.isEmpty ? "payload" : name)
             try await ProcessRunner.run("/bin/sh", ["-c", "/usr/bin/gunzip -c \"$0\" > \"$1\"", url.path, output.path])
-        default: try await ProcessRunner.run("/usr/bin/tar", ["-xf", url.path, "-C", folder.path])
+            if holdsTar(output) { try await unpackTar(output, into: folder, options: tarOptions) }
+        default: try await ProcessRunner.run("/usr/bin/tar", tarOptions + ["-xf", url.path, "-C", folder.path])
         }
         let contents = try FileManager.default.contentsOfDirectory(atPath: folder.path)
         guard !contents.isEmpty else { throw ConversionError.encodingFailed("The source archive is empty.") }
     }
 
-    static func convert(_ url: URL, from source: ConversionFormat, to target: ConversionFormat) async throws -> URL {
-        let output = OutputNaming.destination(for: url, extension: target.fileExtension)
+    /// Unpacks a tarball hidden in a plain `.gz`. It moves out of `folder` first, as an entry may share its name.
+    private static func unpackTar(_ tar: URL, into folder: URL, options: [String]) async throws {
+        let holding = try OutputNaming.temporaryDirectory(prefix: "Satsuma-archive-")
+        defer { try? FileManager.default.removeItem(at: holding) }
+        let moved = holding.appendingPathComponent("payload.tar")
+        try FileManager.default.moveItem(at: tar, to: moved)
+        try await ProcessRunner.run("/usr/bin/tar", options + ["-xf", moved.path, "-C", folder.path])
+    }
+
+    private static func isTarball(_ url: URL) -> Bool {
+        let name = url.lastPathComponent.lowercased()
+        return name.hasSuffix(".tar.gz") || name.hasSuffix(".tgz")
+    }
+
+    /// True for a file with the `ustar` magic at offset 257.
+    private static func holdsTar(_ url: URL) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        guard let header = try? handle.read(upToCount: 262), header.count == 262 else { return false }
+        return header.suffix(5).elementsEqual("ustar".utf8)
+    }
+
+    /// The source's name without its archive suffix: `.tar.gz` or `.tgz`, otherwise the last extension.
+    static func stem(of url: URL) -> String {
+        let name = url.lastPathComponent
+        for suffix in [".tar.gz", ".tgz"] where name.lowercased().hasSuffix(suffix) && name.count > suffix.count {
+            return String(name.dropLast(suffix.count))
+        }
+        return url.deletingPathExtension().lastPathComponent
+    }
+
+    /// `<stem>.<ext>` beside the source, then `<stem> 2.<ext>`. GZIP is always `.tar.gz`, even for one file.
+    static func destination(for url: URL, target: ConversionFormat) -> URL {
+        let folder = url.deletingLastPathComponent(), name = stem(of: url)
+        let ext = target == .gzip ? "tar.gz" : target.fileExtension
+        var candidate = folder.appendingPathComponent("\(name).\(ext)")
+        var index = 2
+        while FileManager.default.fileExists(atPath: candidate.path) {
+            candidate = folder.appendingPathComponent("\(name) \(index).\(ext)")
+            index += 1
+        }
+        return candidate
+    }
+
+    /// `-1`, `-6` or `-9` for zlib, from the Compression picker.
+    private static func level(_ compression: CompressionLevel) -> String {
+        switch compression {
+        case .fast: return "1"
+        case .balanced: return "6"
+        case .maximum: return "9"
+        }
+    }
+
+    /// Drops Finder residue that a source archive carried as ordinary files, so it stays out of the output.
+    private static func removeFinderResidue(in folder: URL) async throws {
+        // `find`, because FileManager's listings silently hide `._` files.
+        let listing = try await ProcessRunner.run("/usr/bin/find", [folder.path, "(", "-name", "__MACOSX", "-o", "-name", "._*", ")", "-print0"])
+        for item in listing.split(separator: "\0").map({ URL(fileURLWithPath: String($0)) })
+        where item.lastPathComponent == "__MACOSX" || isAppleDouble(item) {
+            try? FileManager.default.removeItem(at: item)
+        }
+    }
+
+    /// A `._name` sidecar: a file with the AppleDouble magic. The name alone proves nothing, as a user may have a `._git` too.
+    private static func isAppleDouble(_ url: URL) -> Bool {
+        guard url.lastPathComponent.hasPrefix("._"), let handle = try? FileHandle(forReadingFrom: url) else { return false }
+        defer { try? handle.close() }
+        return (try? handle.read(upToCount: 4)) == Data([0x00, 0x05, 0x16, 0x07])
+    }
+
+    static func convert(_ url: URL, from source: ConversionFormat, to target: ConversionFormat,
+                        options: ConversionOptions = ConversionOptions()) async throws -> URL {
         let work = try OutputNaming.temporaryDirectory(prefix: "Satsuma-archive-")
         defer { try? FileManager.default.removeItem(at: work) }
-        let root = work.appendingPathComponent(url.deletingPathExtension().deletingPathExtension().lastPathComponent)
-        try await extract(url, format: source, into: root)
+        let contents = work.appendingPathComponent("contents")
+        try await extract(url, format: source, into: contents, macMetadata: false)
+        try await removeFinderResidue(in: contents)
+        guard !((try? FileManager.default.contentsOfDirectory(atPath: contents.path)) ?? []).isEmpty else {
+            throw ConversionError.encodingFailed("The source archive is empty.")
+        }
+        if target == .gzip { return try await packGzip(contents, work: work, source: url, options: options) }
+        let output = destination(for: url, target: target)
         switch target {
-        case .zip: try await ProcessRunner.run("/usr/bin/ditto", ["-c", "-k", "--sequesterRsrc", "--keepParent", root.path, output.path])
-        case .tar: try await ProcessRunner.run("/usr/bin/tar", ["-cf", output.path, "-C", work.path, root.lastPathComponent])
+        // Entries at the archive's root, no wrapping folder. No resource forks or tar AppleDouble: macOS tags extracted files, which would add junk beside every entry.
+        case .zip: try await ProcessRunner.run("/usr/bin/ditto", ["-c", "-k", "--norsrc", "--zlibCompressionLevel", level(options.compression), contents.path, output.path])
+        case .tar: try await ProcessRunner.run("/usr/bin/tar", ["--no-mac-metadata", "-cf", output.path, "-C", contents.path, "."])
         default: throw ConversionError.unsupportedPair(source, target)
         }
+        return output
+    }
+
+    /// `.tar.gz` of the extracted entries (no wrapping folder), built in `work` and moved beside the source when complete.
+    private static func packGzip(_ root: URL, work: URL, source: URL, options: ConversionOptions) async throws -> URL {
+        let tar = work.appendingPathComponent("payload.tar"), gzipped = work.appendingPathComponent("output.tar.gz")
+        try await ProcessRunner.run("/usr/bin/tar", ["--no-mac-metadata", "-cf", tar.path, "-C", root.path, "."])
+        // `-n` keeps the temporary name "payload.tar" out of the gzip header.
+        try await ProcessRunner.run("/bin/sh", ["-c", "/usr/bin/gzip -\(level(options.compression)) -n -c \"$0\" > \"$1\"", tar.path, gzipped.path])
+        let output = destination(for: source, target: .gzip)
+        try FileManager.default.moveItem(at: gzipped, to: output)
         return output
     }
 

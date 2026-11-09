@@ -25,6 +25,15 @@ enum MediaConverter {
         return ["-vf", "scale=-2:'min(\(options.videoMaxHeight),ih)'"]
     }
 
+    /// libx264 with yuv420p and wmv2 reject odd dimensions; sizes that are already even pass through unchanged.
+    static let evenSize = "scale='2*max(1,trunc(iw/2))':'2*max(1,trunc(ih/2))'"
+
+    static func evenScaleFilter(_ options: ConversionOptions) -> [String] {
+        guard options.videoMaxHeight > 0 else { return ["-vf", evenSize] }
+        // Spelled out rather than -2, which rounds the width of a hairline source down to 0.
+        return ["-vf", "scale='max(2,2*trunc(oh*a/2+0.5))':'2*max(1,trunc(min(\(options.videoMaxHeight),ih)/2))'"]
+    }
+
     static func sampleFormat(_ depth: AudioSampleDepth, bigEndian: Bool = false) -> String? {
         switch depth {
         case .matchSource: return nil
@@ -44,15 +53,15 @@ enum MediaConverter {
         switch target {
         case .mp4, .mov, .mkv:
             args += ["-c:v", "libx264", "-preset", "medium", "-crf", videoCRF(options), "-pix_fmt", "yuv420p"]
-            args += scaleFilter(options)
+            args += evenScaleFilter(options)
             args += ["-c:a", "aac", "-b:a", bitrate]
             if target != .mkv { args += ["-movflags", "+faststart"] }
         case .webm:
-            args += ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1"] + scaleFilter(options) + ["-c:a", "libopus", "-b:a", bitrate]
+            args += ["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-row-mt", "1", "-pix_fmt", "yuv420p"] + scaleFilter(options) + ["-c:a", "libopus", "-b:a", bitrate]
         case .avi:
             args += ["-c:v", "mpeg4", "-q:v", options.quality == .high ? "3" : "5"] + scaleFilter(options) + ["-c:a", "libmp3lame", "-b:a", bitrate]
         case .wmv:
-            args += ["-c:v", "wmv2", "-q:v", "4"] + scaleFilter(options) + ["-c:a", "wmav2", "-b:a", bitrate]
+            args += ["-c:v", "wmv2", "-q:v", "4"] + evenScaleFilter(options) + ["-c:a", "wmav2", "-b:a", bitrate]
         case .gif:
             let width = options.gifMaxWidth > 0 ? options.gifMaxWidth : 640
             let graph = "fps=\(options.gifFrameRate),scale=min(\(width)\\,iw):-2:force_original_aspect_ratio=decrease,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse"

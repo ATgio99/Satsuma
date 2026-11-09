@@ -5,7 +5,7 @@ import XCTest
 
 final class RegistryTests: XCTestCase {
     func testPetalOrderMatchesBinaryArrays() {
-        XCTAssertEqual(ActionRegistry.candidates(for: .pdf), [.docx, .pages, .pptx, .xlsx, .jpg, .png, .epub, .txt, .md])
+        XCTAssertEqual(ActionRegistry.candidates(for: .pdf), [.docx, .pages, .pptx, .xlsx, .jpg, .png, .svg, .epub, .txt, .md])
         XCTAssertEqual(ActionRegistry.candidates(for: .heic), [.jpg, .png, .webp, .heic, .tiff, .avif, .bmp, .pdf])
         XCTAssertEqual(ActionRegistry.candidates(for: .mov), [.mp4, .mov, .mkv, .webm, .avi, .wmv, .gif, .mp3])
     }
@@ -19,7 +19,8 @@ final class RegistryTests: XCTestCase {
 
     func testInputOnlyFormatsNeverAppearAsOutputs() {
         for source in ConversionFormat.allCases {
-            for output in ActionRegistry.conversionOutputs(for: [source]) {
+            // SVG is output only for PDF pages; everywhere else it stays input-only.
+            for output in ActionRegistry.conversionOutputs(for: [source]) where !(source == .pdf && output == .svg) {
                 XCTAssertFalse(output.isInputOnly, "\(source) offers input-only \(output)")
             }
         }
@@ -30,8 +31,8 @@ final class RegistryTests: XCTestCase {
     }
 
     func testToolsIntersectAndFallBackToQRCode() {
-        XCTAssertEqual(ActionRegistry.toolOutputs(for: [.pdf]), [.compress, .removeMetadata, .splitPDF, .organizePDF, .readQRCode])
-        XCTAssertEqual(ActionRegistry.toolOutputs(for: [.pdf, .pdf]), [.compress, .removeMetadata, .splitPDF, .mergePDF, .readQRCode])
+        XCTAssertEqual(ActionRegistry.toolOutputs(for: [.pdf]), [.compress, .removeMetadata, .splitPDF, .organizePDF, .convertPDFA, .readQRCode])
+        XCTAssertEqual(ActionRegistry.toolOutputs(for: [.pdf, .pdf]), [.compress, .removeMetadata, .splitPDF, .mergePDF, .convertPDFA, .readQRCode])
         XCTAssertEqual(ActionRegistry.toolOutputs(for: [.svg, .pdf]), [.readQRCode])
         XCTAssertEqual(ActionRegistry.toolOutputs(for: [.svg, .svg]), [.createPDF, .createCollage, .readQRCode])
     }

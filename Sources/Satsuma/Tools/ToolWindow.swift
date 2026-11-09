@@ -89,6 +89,7 @@ final class ToolWindowManager {
     static func defaultSize(for tool: FileTool) -> NSSize {
         switch tool {
         case .compress: return NSSize(width: 380, height: 375)
+        case .resizeImage: return NSSize(width: 420, height: 560)
         case .removeMetadata: return NSSize(width: 480, height: 540)
         case .joinVideos, .mergePDF: return NSSize(width: 320, height: 300)
         case .trimAudio, .audioChannels, .redactAudio: return NSSize(width: 400, height: 400)
@@ -115,6 +116,7 @@ struct ToolRootView: View {
             case .annotateImage: AnnotateToolView(context: context)
             case .frameImage: FrameImageToolView(context: context)
             case .cropImage: CropImageToolView(context: context)
+            case .resizeImage: ResizeImageToolView(context: context)
             case .redactImage: RedactPhotoToolView(context: context)
             case .createCollage: CollageToolView(context: context)
             case .trimVideo: TrimVideoToolView(context: context)
@@ -302,7 +304,10 @@ enum ToolFormat {
     static func bytes(_ count: Int64) -> String { ByteCountFormatter.string(fromByteCount: count, countStyle: .file) }
 
     static func fileSize(_ url: URL) -> Int64? {
-        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { $0 }.map(Int64.init)
+        // Not `url.resourceValues`: NSURL caches them, so a file rewritten in a loop would keep its first size.
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+              attributes[.type] as? FileAttributeType == .typeRegular else { return nil }
+        return (attributes[.size] as? NSNumber)?.int64Value
     }
 }
 

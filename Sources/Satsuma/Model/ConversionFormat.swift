@@ -1,9 +1,9 @@
 import Foundation
 import UniformTypeIdentifiers
 
-/// The 46 formats the original app knows, in the binary's enum order (raw value = file extension).
+/// The 47 formats the original app knows, in the binary's enum order (raw value = file extension).
 enum ConversionFormat: String, CaseIterable, Codable, Hashable {
-    case jpg, png, webp, heic, tiff, svg, avif, bmp, pdf
+    case jpg, png, webp, heic, tiff, svg, avif, bmp, raw, pdf
     case mp3, m4a, wav, flac, ogg, opus, aiff, wma
     case mp4, mov, mkv, webm, avi, wmv, gif
     case docx, pages, ppt, pptx, txt, md, rtf, rtfd, textClipping, html, epub
@@ -16,7 +16,7 @@ enum ConversionFormat: String, CaseIterable, Codable, Hashable {
     /// Group of each format.
     var group: Group {
         switch self {
-        case .jpg, .png, .webp, .heic, .tiff, .svg, .avif, .bmp: return .images
+        case .jpg, .png, .webp, .heic, .tiff, .svg, .avif, .bmp, .raw: return .images
         case .mp3, .m4a, .wav, .flac, .ogg, .opus, .aiff, .wma: return .audio
         case .mp4, .mov, .mkv, .webm, .avi, .wmv, .gif: return .video
         case .pdf, .docx, .pages, .ppt, .pptx, .txt, .md, .rtf, .rtfd, .textClipping, .html, .epub: return .documents
@@ -43,8 +43,14 @@ enum ConversionFormat: String, CaseIterable, Codable, Hashable {
         }
     }
 
-    /// Formats that appear only as sources, plus SVG.
-    var isInputOnly: Bool { [.rar, .ppt, .xls, .rtf, .rtfd, .textClipping, .svg].contains(self) }
+    /// Formats that appear only as sources.
+    var isInputOnly: Bool { [.raw, .rar, .ppt, .xls, .rtf, .rtfd, .textClipping].contains(self) }
+
+    /// Camera RAW extensions, decoded by ImageIO.
+    static let rawExtensions: Set<String> = [
+        "3fr", "arw", "cr2", "cr3", "crw", "dcr", "dng", "erf", "fff", "iiq", "kdc", "mos", "mrw",
+        "nef", "nrw", "orf", "pef", "ptx", "raf", "raw", "rw2", "rwl", "sr2", "srf", "srw",
+    ]
 
     /// Package directories that count as files when dropped.
     static let packageExtensions: Set<String> = ["rtfd", "pages", "key", "numbers"]
@@ -56,6 +62,7 @@ enum ConversionFormat: String, CaseIterable, Codable, Hashable {
         map["markdown"] = .md; map["htm"] = .html; map["xhtml"] = .html; map["text"] = .txt
         map["aif"] = .aiff; map["aifc"] = .aiff; map["oga"] = .ogg; map["m4v"] = .mp4
         map["tgz"] = .gzip; map["textclipping"] = .textClipping; map["vtt"] = .vtt
+        for ext in rawExtensions { map[ext] = .raw }
         return map
     }()
 

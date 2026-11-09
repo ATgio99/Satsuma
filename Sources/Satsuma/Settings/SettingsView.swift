@@ -334,9 +334,9 @@ private struct FormatOptionFields: View {
                  : "Create a fixed layout book of page images. Text resizing, selection, and search are unavailable.")
         case .archives where format != .tar:
             Picker("Compression", selection: $model.defaultOptions.compression) {
-                Text("Fast").tag(CompressionLevel.fast)
+                Text("Faster").tag(CompressionLevel.fast)
                 Text("Balanced").tag(CompressionLevel.balanced)
-                Text("Maximum").tag(CompressionLevel.maximum)
+                Text("Smallest File").tag(CompressionLevel.maximum)
             }
         default:
             Text("This output format has no adjustable conversion defaults.").font(.system(size: 12)).foregroundStyle(.secondary)
@@ -349,9 +349,9 @@ private struct FormatOptionFields: View {
 
     private var qualityPicker: some View {
         Picker("Quality", selection: $model.defaultOptions.quality) {
-            Text("Compact").tag(ConversionQuality.compact)
+            Text("Smaller File").tag(ConversionQuality.compact)
             Text("Balanced").tag(ConversionQuality.balanced)
-            Text("High").tag(ConversionQuality.high)
+            Text("Higher Quality").tag(ConversionQuality.high)
         }
     }
 }

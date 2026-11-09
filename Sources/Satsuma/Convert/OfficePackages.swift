@@ -118,3 +118,214 @@ enum XLSX {
         return rows
     }
 }
+
+/// Minimal ODS reader/writer (first sheet, strings and numbers).
+enum ODS {
+    private static let mediaType = "application/vnd.oasis.opendocument.spreadsheet"
+    private static let header = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>"
+
+    static func write(rows: [[String]], sheetName: String = "Sheet1", to url: URL) throws {
+        var table = "<table:table table:name=\"\(sheetName.xmlEscaped)\"><table:table-column table:number-columns-repeated=\"\(max(rows.map(\.count).max() ?? 1, 1))\"/>"
+        for row in rows {
+            table += "<table:table-row>"
+            table += row.isEmpty ? "<table:table-cell/>" : row.map(cellXML).joined()
+            table += "</table:table-row>"
+        }
+        table += "</table:table>"
+        var zip = ZipWriter()
+        zip.add("mimetype", mediaType)   // must stay the first entry, and ZipWriter stores it uncompressed
+        zip.add("META-INF/manifest.xml", "\(header)<manifest:manifest xmlns:manifest=\"urn:oasis:names:tc:opendocument:xmlns:manifest:1.0\" manifest:version=\"1.2\"><manifest:file-entry manifest:full-path=\"/\" manifest:version=\"1.2\" manifest:media-type=\"\(mediaType)\"/><manifest:file-entry manifest:full-path=\"content.xml\" manifest:media-type=\"text/xml\"/></manifest:manifest>")
+        zip.add("content.xml", "\(header)<office:document-content xmlns:office=\"urn:oasis:names:tc:opendocument:xmlns:office:1.0\" xmlns:table=\"urn:oasis:names:tc:opendocument:xmlns:table:1.0\" xmlns:text=\"urn:oasis:names:tc:opendocument:xmlns:text:1.0\" office:version=\"1.2\"><office:body><office:spreadsheet>\(table)</office:spreadsheet></office:body></office:document-content>")
+        try zip.finish().write(to: url)
+    }
+
+    private static func cellXML(_ value: String) -> String {
+        guard !value.isEmpty else { return "<table:table-cell/>" }
+        // Leading zeros and numbers beyond Double's precision (15 significant digits) stay text, or they would be silently altered.
+        let significant = value.drop { "-0.".contains($0) }.filter { $0 != "." }.count
+        if significant <= 15, value.range(of: #"^-?(0|[1-9][0-9]*)(\.[0-9]+)?$"#, options: .regularExpression) != nil {
+            return "<table:table-cell office:value-type=\"float\" office:value=\"\(value)\"><text:p>\(value)</text:p></table:table-cell>"
+        }
+        let paragraphs = value.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map { paragraphXML(String($0)) }
+        return "<table:table-cell office:value-type=\"string\">\(paragraphs.joined())</table:table-cell>"
+    }
+
+    /// ODF collapses runs of white space inside `text:p`, so anything that must survive is spelled out.
+    private static func paragraphXML(_ line: String) -> String {
+        var body = ""
+        var index = line.startIndex
+        while index < line.endIndex {
+            if line[index] == " " {
+                let run = line[index...].prefix { $0 == " " }
+                let isolated = run.count == 1 && run.startIndex != line.startIndex && run.endIndex != line.endIndex
+                body += isolated ? " " : "<text:s text:c=\"\(run.count)\"/>"
+                index = run.endIndex
+            } else if line[index] == "\t" {
+                body += "<text:tab/>"
+                index = line.index(after: index)
+            } else {
+                let run = line[index...].prefix { $0 != " " && $0 != "\t" }
+                body += String(run).xmlEscaped
+                index = run.endIndex
+            }
+        }
+        return "<text:p>\(body)</text:p>"
+    }
+
+    static func read(_ url: URL) throws -> [[String]] {
+        let folder = try OutputNaming.temporaryDirectory(prefix: "Satsuma-ods-")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let unzip = Process()
+        unzip.executableURL = URL(fileURLWithPath: "/usr/bin/ditto")
+        unzip.arguments = ["-x", "-k", url.path, folder.path]
+        try unzip.run(); unzip.waitUntilExit()
+        guard unzip.terminationStatus == 0, let parser = XMLParser(contentsOf: folder.appendingPathComponent("content.xml")) else {
+            throw ConversionError.sourceCannotBeRead
+        }
+        let content = ODSContentReader()
+        parser.delegate = content
+        guard parser.parse() || content.isFinished else { throw ConversionError.sourceCannotBeRead }
+        guard !content.exceededLimit else { throw ConversionError.encodingFailed("The spreadsheet is empty or exceeds the 128 MB conversion limit.") }
+        return content.rectangularRows
+    }
+}
+
+/// Collects the first sheet of an ODS `content.xml`. Calc pads every sheet to its full size with repeated empty
+/// cells and rows, so blanks stay counters until a value follows them and trailing ones are simply never written.
+private final class ODSContentReader: NSObject, XMLParserDelegate {
+    private static let maxColumns = 16_384, maxRows = 1_048_576, maxSpaces = 4_096
+    /// What one more cell costs on top of its text: its separator and its slot in memory.
+    private static let cellCost = 8
+
+    private(set) var rows: [[String]] = []
+    private(set) var isFinished = false
+    /// Bytes that repeat attributes and `text:s` may still create; a file that runs out is refused instead of exhausting memory.
+    private var expansionBudget = 128 * 1024 * 1024
+    private(set) var exceededLimit = false
+    private var row: [String] = []
+    private var rowRepeat = 1
+    private var blankRows = 0
+    private var blankColumns = 0
+    private var cellDepth = 0
+    private var cellRepeat = 1
+    private var isCovered = false
+    private var numericValue: String?
+    private var stringValue: String?
+    private var paragraphs: [String] = []
+    private var paragraph: String?
+
+    /// Trailing blanks were not kept, so short rows are filled back to the used width (blank rows included).
+    var rectangularRows: [[String]] {
+        let width = rows.map(\.count).max() ?? 0
+        guard rows.reduce(0, { $0 + width - $1.count }) * Self.cellCost <= expansionBudget else { return rows }
+        return rows.map { $0.count == width ? $0 : $0 + repeatElement("", count: width - $0.count) }
+    }
+
+    private static func count(_ text: String?, limit: Int) -> Int { max(1, min(text.flatMap(Int.init) ?? 1, limit)) }
+
+    /// LibreOffice stores very large or small numbers as "1E+020", which the writers would take for text.
+    private static func plainNumber(_ value: String?) -> String? {
+        guard let value, value.contains(where: { $0 == "E" || $0 == "e" }), let decimal = Decimal(string: value), !decimal.isNaN else { return value }
+        return decimal.description
+    }
+
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?,
+                attributes: [String: String] = [:]) {
+        if cellDepth > 0 {
+            cellDepth += 1
+            if paragraph == nil {
+                // Only direct children: comments and shapes in a cell hold `text:p` elements of their own.
+                if cellDepth == 2, name == "text:p", !isCovered { paragraph = "" }
+            } else if name == "text:s" {
+                let spaces = Self.count(attributes["text:c"], limit: Self.maxSpaces)
+                guard spend(spaces, parser) else { return }
+                paragraph! += String(repeating: " ", count: spaces)
+            } else if name == "text:tab" {
+                paragraph! += "\t"
+            } else if name == "text:line-break" {
+                paragraph! += "\n"
+            }
+        } else if name == "table:table-row" {
+            row = []
+            blankColumns = 0
+            rowRepeat = Self.count(attributes["table:number-rows-repeated"], limit: Self.maxRows)
+        } else if name == "table:table-cell" || name == "table:covered-table-cell" {
+            cellDepth = 1
+            isCovered = name == "table:covered-table-cell"
+            cellRepeat = Self.count(attributes["table:number-columns-repeated"], limit: Self.maxColumns)
+            let type = attributes["office:value-type"]
+            numericValue = type == "float" || type == "percentage" || type == "currency" ? Self.plainNumber(attributes["office:value"]) : nil
+            stringValue = attributes["office:string-value"] ?? attributes["office:date-value"] ?? attributes["office:time-value"] ?? attributes["office:boolean-value"]
+            paragraphs = []
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard paragraph != nil else { return }
+        for character in string {
+            if character == " " || character == "\t" || character.isNewline {
+                if let last = paragraph!.last, last != " " { paragraph!.append(" ") }
+            } else {
+                paragraph!.append(character)
+            }
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        if cellDepth > 0 {
+            if cellDepth == 2, name == "text:p", let paragraph {
+                paragraphs.append(paragraph)
+                self.paragraph = nil
+            }
+            cellDepth -= 1
+            if cellDepth == 0 { finishCell(parser) }
+        } else if name == "table:table-row" {
+            finishRow(parser)
+        } else if name == "table:table" {
+            finish(parser)     // like XLSX.read, only the first sheet
+        }
+    }
+
+    private func finish(_ parser: XMLParser) {
+        isFinished = true
+        parser.abortParsing()
+    }
+
+    private func spend(_ bytes: Int, _ parser: XMLParser) -> Bool {
+        guard bytes <= expansionBudget else {
+            exceededLimit = true
+            finish(parser)
+            return false
+        }
+        expansionBudget -= bytes
+        return true
+    }
+
+    private func finishCell(_ parser: XMLParser) {
+        let value = isCovered ? "" : numericValue ?? (paragraphs.isEmpty ? stringValue ?? "" : paragraphs.joined(separator: "\n"))
+        guard !value.isEmpty else {
+            blankColumns = min(blankColumns + cellRepeat, Self.maxColumns)
+            return
+        }
+        guard row.count + blankColumns < Self.maxColumns else { return }
+        guard spend(blankColumns * Self.cellCost + (cellRepeat - 1) * (value.utf8.count + Self.cellCost), parser) else { return }
+        row.append(contentsOf: repeatElement("", count: blankColumns))
+        row.append(contentsOf: repeatElement(value, count: min(cellRepeat, Self.maxColumns - row.count)))
+        blankColumns = 0
+    }
+
+    private func finishRow(_ parser: XMLParser) {
+        guard !row.isEmpty else {
+            blankRows = min(blankRows + rowRepeat, Self.maxRows)
+            return
+        }
+        guard rows.count + blankRows < Self.maxRows else { finish(parser); return }
+        guard spend(blankRows, parser) else { return }
+        rows.append(contentsOf: repeatElement([], count: blankRows))
+        blankRows = 0
+        let copies = min(rowRepeat, Self.maxRows - rows.count)
+        guard spend((copies - 1) * row.reduce(0) { $0 + $1.utf8.count + Self.cellCost }, parser) else { return }
+        rows.append(contentsOf: repeatElement(row, count: copies))
+        if copies < rowRepeat || rows.count == Self.maxRows { finish(parser) }
+    }
+}

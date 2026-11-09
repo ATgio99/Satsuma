@@ -45,8 +45,10 @@ enum MediaTools {
                           "-pix_fmt", "yuv420p"]
         } else {
             arguments += videoCodecArguments(crf: plan.strong ? 31 : 26)
-            if plan.strong { arguments += ["-vf", "scale=-2:'min(1080,ih)'"] }
         }
+        var scaling = ConversionOptions()
+        scaling.videoMaxHeight = plan.strong && plan.targetBytes == nil ? 1080 : 0
+        arguments += MediaConverter.evenScaleFilter(scaling)
         arguments += facts.hasAudio ? ["-c:a", "aac", "-b:a", plan.strong ? "96k" : "128k"] : ["-an"]
         arguments += ["-movflags", "+faststart", output.path]
         try await ffmpeg(arguments, duration: facts.duration, progress: progress)
@@ -77,7 +79,7 @@ enum MediaTools {
         if audioOnly {
             arguments += ["-vn"]
         } else {
-            arguments += videoCodecArguments(crf: 18) + ["-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
+            arguments += videoCodecArguments(crf: 18) + ["-vf", MediaConverter.evenSize, "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart"]
         }
         try await ffmpeg(arguments + [output.path], duration: end - start, progress: progress)
         return output
@@ -103,7 +105,7 @@ enum MediaTools {
     static func changeSpeed(_ url: URL, speed: Double, progress: @escaping (Double) -> Void) async throws -> URL {
         let facts = await MediaFacts.load(url)
         let output = OutputNaming.destination(for: url, extension: outputExtension(for: url), suffix: " \(speedLabel(speed))")
-        var arguments = ["-i", url.path, "-filter:v", "setpts=PTS/\(speed)"]
+        var arguments = ["-i", url.path, "-filter:v", "setpts=PTS/\(speed),\(MediaConverter.evenSize)"]
         if facts.hasAudio {
             // atempo accepts 0.5…2 per stage; chain stages to preserve pitch.
             var stages: [String] = []
@@ -152,7 +154,7 @@ enum MediaTools {
         for index in 0..<(cuts.count - 1) {
             let output = folder.appendingPathComponent(String(format: "%@ %02d.%@", url.deletingPathExtension().lastPathComponent, index + 1, ext))
             try await ffmpeg(["-i", url.path, "-ss", String(format: "%.3f", cuts[index]), "-to", String(format: "%.3f", cuts[index + 1])]
-                             + videoCodecArguments(crf: 18) + ["-c:a", "aac", "-b:a", "192k", output.path])
+                             + videoCodecArguments(crf: 18) + ["-vf", MediaConverter.evenSize, "-c:a", "aac", "-b:a", "192k", output.path])
             progress(Double(index + 1) / Double(cuts.count - 1))
         }
         return folder
@@ -181,14 +183,14 @@ enum MediaTools {
                 parts.append("[v\(index)][b\(index)]overlay=\(x):\(y)\(enable(r))[v\(index + 1)]")
             }
             graph = parts.joined(separator: ";")
-            graph += ";[v\(rects.count)]null[out]"
+            graph += ";[v\(rects.count)]\(MediaConverter.evenSize)[out]"
         } else {
             let boxes = rects.map { r -> String in
                 let (x, y, w, h) = box(r)
                 let hex = String(format: "0x%02X%02X%02X", Int(r.color.red * 255), Int(r.color.green * 255), Int(r.color.blue * 255))
                 return "drawbox=x=\(x):y=\(y):w=\(w):h=\(h):color=\(hex):t=fill\(enable(r))"
             }
-            graph = "[0:v]" + boxes.joined(separator: ",") + "[out]"
+            graph = "[0:v]" + boxes.joined(separator: ",") + ",\(MediaConverter.evenSize)[out]"
         }
         let output = OutputNaming.destination(for: url, extension: outputExtension(for: url), suffix: " redacted")
         try await ffmpeg(["-i", url.path, "-filter_complex", graph, "-map", "[out]", "-map", "0:a?"]

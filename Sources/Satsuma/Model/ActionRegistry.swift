@@ -6,10 +6,10 @@ enum ActionRegistry {
 
     static func candidates(for source: ConversionFormat) -> [ConversionFormat] {
         switch source {
-        case .jpg, .png, .webp, .heic, .tiff, .svg, .avif, .bmp:
+        case .jpg, .png, .webp, .heic, .tiff, .svg, .avif, .bmp, .raw:
             return [.jpg, .png, .webp, .heic, .tiff, .avif, .bmp, .pdf]
         case .pdf:
-            return [.docx, .pages, .pptx, .xlsx, .jpg, .png, .epub, .txt, .md]
+            return [.docx, .pages, .pptx, .xlsx, .jpg, .png, .svg, .epub, .txt, .md]
         case .docx, .pages, .txt, .md, .rtf, .rtfd, .textClipping, .html:
             return [.docx, .pages, .pdf, .txt, .md, .html, .epub, .png, .jpg]
         case .epub:
@@ -24,8 +24,14 @@ enum ActionRegistry {
             return [.mp4, .mov, .mkv, .webm, .avi, .wmv]
         case .mp3, .m4a, .wav, .flac, .ogg, .opus, .aiff, .wma:
             return [.mp3, .m4a, .wav, .flac, .ogg, .opus, .aiff, .wma]
-        case .zip, .tar, .gzip, .rar:
+        case .zip:
+            return [.tar, .gzip]
+        case .tar:
+            return [.zip, .gzip]
+        case .gzip:
             return [.zip, .tar]
+        case .rar:
+            return [.zip, .tar, .gzip]
         case .srt:
             return [.vtt, .txt]
         case .vtt:
@@ -41,7 +47,7 @@ enum ActionRegistry {
         case .video: return [.mp4, .mov, .mkv, .webm, .avi, .wmv, .gif, .mp3]
         case .documents: return [.pdf, .docx, .pages, .txt, .md, .html]
         case .spreadsheets: return candidates(for: .csv)
-        case .archives: return [.zip, .tar]
+        case .archives: return [.zip, .tar, .gzip]
         case .subtitles: return [.srt, .vtt]
         }
     }
@@ -69,14 +75,14 @@ enum ActionRegistry {
         switch format {
         case .jpg, .png, .webp, .heic, .tiff:
             return count > 1
-                ? [.compress, .removeMetadata, .cropImage, .createPDF, .createCollage]
-                : [.compress, .removeMetadata, .editImage, .annotateImage, .frameImage, .cropImage, .redactImage]
-        case .avif, .bmp: return []
+                ? [.compress, .removeMetadata, .cropImage, .resizeImage, .createPDF, .createCollage]
+                : [.compress, .removeMetadata, .editImage, .annotateImage, .frameImage, .cropImage, .resizeImage, .redactImage]
+        case .avif, .bmp, .raw: return []
         case .svg: return count > 1 ? [.createPDF, .createCollage, .readQRCode] : []
         case .pdf:
             return count > 1
-                ? [.compress, .removeMetadata, .splitPDF, .mergePDF, .readQRCode]
-                : [.compress, .removeMetadata, .splitPDF, .organizePDF, .readQRCode]
+                ? [.compress, .removeMetadata, .splitPDF, .mergePDF, .convertPDFA, .readQRCode]
+                : [.compress, .removeMetadata, .splitPDF, .organizePDF, .convertPDFA, .readQRCode]
         case .mp3, .m4a, .wav, .flac:
             return [.compress, .removeMetadata, .normalizeAudio, .audioToVideo, .trimAudio, .audioChannels, .redactAudio]
         case .mp4, .mov, .mkv:

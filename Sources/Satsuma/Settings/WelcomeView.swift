@@ -71,7 +71,7 @@ struct OnboardingView: View {
                       actions: [.png, .webp, .heic, .tiff, .avif, .bmp, .pdf].map { .convert($0) })
         case .tools:
             wheelPage(title: "File Tools", mask: settings.toolsMask,
-                      actions: [.compress, .removeMetadata, .editImage, .annotateImage, .frameImage, .cropImage, .redactImage].map { .fileTool($0) })
+                      actions: [.compress, .removeMetadata, .editImage, .annotateImage, .frameImage, .cropImage, .resizeImage, .redactImage].map { .fileTool($0) })
         case .actions:
             wheelPage(title: "File Actions", mask: settings.actionsMask, actions: ConversionFanAction.fileActions)
         case .folders:

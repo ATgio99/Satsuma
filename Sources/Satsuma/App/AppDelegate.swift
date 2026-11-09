@@ -71,7 +71,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             let batchTools: Set<FileTool> = [.createPDF, .mergePDF, .joinVideos, .createCollage, .readQRCode]
             let options = settings.defaultOptions
-            taskStore.run(title: tool.title.capitalized, urls: urls, batch: batchTools.contains(tool)) { group, progress in
+            let progressTitle = tool == .convertPDFA ? "Converting to PDF/A-2b" : tool.title.capitalized
+            taskStore.run(title: progressTitle, urls: urls, batch: batchTools.contains(tool)) { group, progress in
                 try await FileToolRunner.run(tool, urls: group, options: options, progress: progress)
             }
         case .airDrop: FileActions.airDrop(urls)

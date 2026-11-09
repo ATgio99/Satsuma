@@ -193,7 +193,8 @@ extension String {
             case ">": out += "&gt;"
             case "\"": out += "&quot;"
             default:
-                if let scalar = character.unicodeScalars.first, scalar.value < 0x20, scalar != "\n", scalar != "\t" { continue }
+                if let scalar = character.unicodeScalars.first,
+                   (scalar.value < 0x20 && scalar != "\n" && scalar != "\t") || scalar.value == 0xFFFE || scalar.value == 0xFFFF { continue }
                 out.append(character)
             }
         }

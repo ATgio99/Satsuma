@@ -17,6 +17,7 @@ enum FileToolRunner {
         case .normalizeAudio:
             return try await mapEach(urls, progress) { try await ffmpeg($0, suffix: " normalized", ["-af", "loudnorm=I=-16:LRA=11:TP=-1.5"]) }
         case .splitPDF: return try await mapEach(urls, progress) { try splitPDF($0) }
+        case .convertPDFA: return try await mapEach(urls, progress) { try PDFAWriter.convert($0) }
         case .extractArchive: return try await mapEach(urls, progress) { try await ArchiveConverter.extractBeside($0) }
         case .createPDF: return [try createPDF(from: urls)]
         case .mergePDF: return [try mergePDFs(urls)]
@@ -49,7 +50,7 @@ enum FileToolRunner {
             var options = SettingsModel.shared.defaultOptions
             options.quality = .compact
             options.preserveMetadata = false
-            let target: ConversionFormat = [.png, .bmp, .tiff].contains(format) ? .jpg : (format == .svg ? .png : format)
+            let target: ConversionFormat = [.png, .bmp, .tiff, .raw].contains(format) ? .jpg : (format == .svg ? .png : format)
             let output = OutputNaming.destination(for: url, extension: target.fileExtension, suffix: " compressed")
             let (images, _) = try ImageConverter.loadImages(url, format: format)
             if target == .webp {
@@ -70,7 +71,7 @@ enum FileToolRunner {
             }
             return try keepSmaller(output, than: url)
         case .video:
-            return try keepSmaller(try await ffmpeg(url, suffix: " compressed", ["-c:v", "libx264", "-crf", "28", "-preset", "slow", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "128k"], ext: "mp4"), than: url)
+            return try keepSmaller(try await ffmpeg(url, suffix: " compressed", ["-c:v", "libx264", "-crf", "28", "-preset", "slow", "-pix_fmt", "yuv420p", "-vf", MediaConverter.evenSize, "-c:a", "aac", "-b:a", "128k"], ext: "mp4"), than: url)
         case .audio:
             return try keepSmaller(try await ffmpeg(url, suffix: " compressed", ["-vn", "-c:a", "aac", "-b:a", "96k"], ext: "m4a"), than: url)
         default:
@@ -93,6 +94,11 @@ enum FileToolRunner {
     static func removeMetadata(_ url: URL) async throws -> URL {
         guard let format = ConversionFormat.detect(url) else { throw ConversionError.unsupportedSource }
         switch format.group {
+        case .images where format == .raw:
+            // ImageIO cannot write camera RAW, so the clean copy is a PNG of the decoded image.
+            let output = OutputNaming.destination(for: url, extension: "png", suffix: " no metadata")
+            try ImageConverter.write([try ImageProcessing.loadCGImage(url)], properties: [nil], to: output, format: .png, options: ConversionOptions())
+            return output
         case .images where format != .svg:
             guard let source = CGImageSourceCreateWithURL(url as CFURL, nil), let type = CGImageSourceGetType(source) else {
                 throw ConversionError.sourceCannotBeRead
@@ -175,16 +181,50 @@ enum FileToolRunner {
         return output
     }
 
+    /// anullsrc options matching a clip's first audio stream, nil when it has none.
+    /// Asks ffprobe because AVFoundation (MediaFacts) cannot see inside MKV or WebM clips.
+    private static func silenceFormat(of url: URL, ffprobe: String) async throws -> String? {
+        let text = try await ProcessRunner.run(ffprobe, ["-v", "error", "-select_streams", "a:0", "-show_entries", "stream=sample_rate,channels",
+                                                         "-of", "csv=p=0", url.path])
+        let fields = text.trimmingCharacters(in: .whitespacesAndNewlines).components(separatedBy: ",")
+        guard fields.count >= 2 else { return nil }
+        return "r=\(fields[0]):cl=\(fields[1])c"
+    }
+
     static func joinVideos(_ urls: [URL]) async throws -> URL {
         guard urls.count >= 2 else { throw ConversionError.invalidFileToolOptions("Select at least two videos to join.") }
         guard let ffmpeg = ToolLocator.ffmpeg else { throw ConversionError.missingTool("ffmpeg") }
+        guard let ffprobe = ToolLocator.ffprobe else { throw ConversionError.missingTool("ffprobe") }
+        var formats: [String?] = []
+        for url in urls { formats.append(try await silenceFormat(of: url, ffprobe: ffprobe)) }
+        // Clips without sound get silence as long as the clip, so later audio stays in sync. No sound anywhere: no audio stream.
+        let silenceOptions = formats.compactMap { $0 }.first
+        var silence = ""
+        var audioLabels = urls.indices.map { _ in "" }
+        if let silenceOptions {
+            for index in urls.indices {
+                audioLabels[index] = "[\(index):a:0]"
+                guard formats[index] == nil else { continue }
+                // Piped WebM has no duration in its header; concat pads a short stream to the clip's video anyway.
+                let duration = await MediaConverter.duration(of: urls[index]).flatMap { $0 > 0 ? $0 : nil } ?? 0.04
+                silence += "anullsrc=\(silenceOptions),atrim=duration=\(duration)[a\(index)];"
+                audioLabels[index] = "[a\(index)]"
+            }
+        }
+        let hasAudio = silenceOptions != nil
         let output = OutputNaming.destination(for: urls[0], extension: "mp4", suffix: " joined")
         var arguments = ["-hide_banner", "-loglevel", "error", "-nostdin", "-y"]
         for url in urls { arguments += ["-i", url.path] }
         let inputs = urls.indices.map { "[\($0):v:0]scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1[v\($0)];" }.joined()
-        let concat = urls.indices.map { "[v\($0)][\($0):a:0]" }.joined() + "concat=n=\(urls.count):v=1:a=1[v][a]"
-        arguments += ["-filter_complex", inputs + concat, "-map", "[v]", "-map", "[a]", "-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p", "-c:a", "aac", output.path]
-        try await ProcessRunner.run(ffmpeg, arguments)
+        let concat = urls.indices.map { "[v\($0)]\(audioLabels[$0])" }.joined() + "concat=n=\(urls.count):v=1:a=\(hasAudio ? 1 : 0)[v]\(hasAudio ? "[a]" : "")"
+        arguments += ["-filter_complex", inputs + silence + concat, "-map", "[v]"] + (hasAudio ? ["-map", "[a]"] : [])
+        arguments += ["-c:v", "libx264", "-crf", "20", "-pix_fmt", "yuv420p"] + (hasAudio ? ["-c:a", "aac"] : []) + [output.path]
+        do {
+            try await ProcessRunner.run(ffmpeg, arguments)
+        } catch {
+            try? FileManager.default.removeItem(at: output)
+            throw error
+        }
         return output
     }
 

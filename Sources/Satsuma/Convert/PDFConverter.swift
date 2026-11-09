@@ -1,7 +1,7 @@
 import AppKit
 import PDFKit
 
-/// PDF → docx/pages/pptx/xlsx/jpg/png/epub/txt/md (`PDFOfficeConverter.reflow` and friends).
+/// PDF → docx/pages/pptx/xlsx/jpg/png/svg/epub/txt/md (`PDFOfficeConverter.reflow` and friends).
 enum PDFConverter {
     static func convert(_ url: URL, to target: ConversionFormat, options: ConversionOptions,
                         progress: @escaping (Double) -> Void) async throws -> URL {
@@ -12,6 +12,8 @@ enum PDFConverter {
         switch target {
         case .jpg, .png:
             return try PDFPageExporter.export(url, format: target, beside: url, scale: 2)
+        case .svg:
+            return try PDFToSVG.export(document, beside: url, progress: progress)
         case .pptx:
             let pages = try PDFReflow.pageImages(document, progress: progress)
             let output = OutputNaming.destination(for: url, extension: "pptx")

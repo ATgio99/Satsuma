@@ -10,8 +10,8 @@ enum ConverterAvailability {
         case (.archives, .archives): return true
         case (.subtitles, _): return [.srt, .vtt, .txt].contains(target)
         case (.spreadsheets, _):
-            if source == .xls || source == .ods { return ToolLocator.hasNumbers && [.xlsx, .csv, .tsv, .pdf].contains(target) }
-            return [.xlsx, .csv, .tsv, .pdf].contains(target)
+            if source == .xls && !ToolLocator.hasNumbers { return false }
+            return [.xlsx, .ods, .csv, .tsv, .pdf].contains(target)
         case (.documents, _):
             return documentPair(source, target)
         default:
@@ -23,7 +23,7 @@ enum ConverterAvailability {
         if target == .pages && !ToolLocator.hasPages { return false }
         if source == .pages && !ToolLocator.hasPages { return false }
         switch source {
-        case .pdf: return [.docx, .pages, .pptx, .xlsx, .jpg, .png, .epub, .txt, .md].contains(target)
+        case .pdf: return [.docx, .pages, .pptx, .xlsx, .jpg, .png, .svg, .epub, .txt, .md].contains(target)
         case .ppt, .pptx: return ToolLocator.hasKeynote && [.pdf, .jpg, .png].contains(target)
         case .epub: return [.pdf, .docx, .pages, .txt, .md, .html].contains(target)
         case .docx, .pages, .txt, .md, .rtf, .rtfd, .textClipping, .html:
@@ -47,7 +47,7 @@ enum ConversionEngine {
         case (.audio, _), (.video, _):
             return try await MediaConverter.convert(url, from: source, to: target, options: options, progress: progress)
         case (.archives, _):
-            return try await ArchiveConverter.convert(url, from: source, to: target)
+            return try await ArchiveConverter.convert(url, from: source, to: target, options: options)
         case (.subtitles, _):
             return try SubtitleConverter.convert(url, to: target)
         case (.spreadsheets, _):
